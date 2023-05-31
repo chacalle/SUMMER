@@ -495,6 +495,8 @@ smoothSurvey <- function(data, geo = NULL, Amat = NULL, X = NULL, X.unit = NULL,
                             strata = ~strata0,
                             data = data, 
                             ...)
+            design <- subset(design, !is.na(response0))
+
             if(!is.null(timeVar)){
                 mean <- survey::svyby(formula=~response0, by=~region0+time0, design=design, survey::svymean, drop.empty.groups=FALSE)
                 time.i <- as.numeric(as.character(mean$time0))
