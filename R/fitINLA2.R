@@ -258,10 +258,7 @@ smoothCluster <- function(data, X = NULL, family = c("betabinomial", "binomial")
       }
     }
   }
-  if(time.model == "rw2"){
-    linear.trend = FALSE
-    common.trend = FALSE
-  }
+
   if(!is.temporal){
     message("----------------------------------",
             "\nCluster-level model",
@@ -275,6 +272,12 @@ smoothCluster <- function(data, X = NULL, family = c("betabinomial", "binomial")
             "\n  Main temporal model:        ", time.model, appendLF = FALSE)
     msg <- paste0(msg, "\nCluster-level model",
                        "\n  Main temporal model:        ", time.model)
+
+    if(time.model == "rw2"){
+      linear.trend = FALSE
+      common.trend = FALSE
+    }
+
     if(linear.trend && !common.trend){
         message("\n  Additional linear trends:   stratum-age-specific", appendLF = FALSE)
         msg <- paste0(msg, "\n  Additional linear trends:   stratum-age-specific")
