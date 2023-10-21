@@ -703,12 +703,12 @@ smoothSurvey <- function(data, geo = NULL, Amat = NULL, X = NULL, X.unit = NULL,
     }
     
 
-    
     n <- max(dat$region.struct) 
     temp <- NA
     if(!is.unit.level){
         if(!is.null(timeVar)) {
-            n <- n * max(dat$time.struct)
+            n_time <- length(unique(dat$time.struct))
+            n <- n * n_time
             temp <- dat$time[1:n]
         }
         proj <- data.frame(region=dat$region[1:n], time = temp, mean=NA, var=NA, median=NA, lower=NA, upper=NA, logit.mean=NA, logit.var=NA, logit.median=NA, logit.lower=NA, logit.upper=NA)        
@@ -719,9 +719,7 @@ smoothSurvey <- function(data, geo = NULL, Amat = NULL, X = NULL, X.unit = NULL,
         proj <- expand.grid(region = colnames(Amat), time = temp, strata = unique(dat$strata0))
         proj <- cbind(proj, data.frame(mean=NA, var=NA, median=NA, lower=NA, upper=NA, logit.mean=NA, logit.var=NA, logit.median=NA, logit.lower=NA, logit.upper=NA)) 
     }
-  
 
-  
     for(i in 1:dim(proj)[1]){
         if(!is.unit.level){
             tmp <- matrix(INLA::inla.rmarginal(1e5, fit$marginals.linear.predictor[[i]]))
@@ -772,73 +770,93 @@ smoothSurvey <- function(data, geo = NULL, Amat = NULL, X = NULL, X.unit = NULL,
 
     if("strata" %in% colnames(proj)){
         draws.out <- proj[, c("region", "time", "strata")]
+
+        draws.out.overall <- unique(draws.out[, c("region", "time")])
+        for(j in 1:nsim) draws.out.overall[, paste0("sample:", j)] <- 0
+
+        proj.agg <- expand.grid(region = colnames(Amat), time = temp)
+        proj.agg <- cbind(proj.agg, data.frame(mean=NA, var=NA, median=NA, lower=NA, upper=NA, logit.mean=NA, logit.var=NA, logit.median=NA, logit.lower=NA, logit.upper=NA))
+
     }else{
-        draws.out <- proj[, c("region", "time")]        
+        draws.out <- proj[, c("region", "time")]
+        draws.out.overall <- NULL
+        proj.agg <- NULL
     }
     for(j in 1:nsim) draws.out[, paste0("sample:", j)] <- NA
     sampAll <- NULL
     if(save.draws){
         sampAll <- INLA::inla.posterior.sample(n = nsim, result = fit, intern = TRUE)
-        for(i in 1:dim(draws.out)[1]){
-            for(j in 1:nsim){
-                draws.out[i, paste0("sample:", j)]  <- sampAll[[j]]$latent[i, 1]
-                if(!include_time_unstruct && !is.null(timeVar)){
-                    draws.out[i, paste0("sample:", j)]  <- draws.out[i, paste0("sample:", j)] - sampAll[[j]]$latent[paste0("time.unstruct:", draws.out$time[i, 1])]
-                }
+        if (!is.unit.level) {
+          for(i in 1:dim(draws.out)[1]){
+            for(j in 1:nsim) {
+              draws.out[i, paste0("sample:", j)]  <- sampAll[[j]]$latent[i, 1]
+              if(!include_time_unstruct && !is.null(timeVar)){
+                time.i.seq <- as.numeric(factor(dat$time.unstruct))
+                draws.out[i, paste0("sample:", j)]  <- draws.out[i, paste0("sample:", j)] - sampAll[[j]]$latent[paste0("time.unstruct:", time.i.seq[i]), 1]
+              }
             }
-        }
-    }
+          }
+        } else {
+          for(i in 1:dim(draws.out)[1]){
+            for(j in 1:nsim) {
+              r <- sampAll[[j]]$latent[paste0("region.struct:", match(draws.out$region[i], colnames(Amat))), ]
+              if(!is.null(timeVar)) r <- r + sampAll[[j]]$latent[paste0("time.struct:", draws.out$time[i]), ]
+              if(!is.null(timeVar) && include_time_unstruct) r <- r + sampAll[[j]]$latent[paste0("time.unstruct:", draws.out$time[i]), ]
 
-   # Aggregation with posterior samples
-   if(is.unit.level && !is.null(weight.strata) && length(unique(data$strata0)) > 1){
-     proj.agg <- expand.grid(region = colnames(Amat), time = temp)
-     proj.agg <- cbind(proj.agg, data.frame(mean=NA, var=NA, median=NA, lower=NA, upper=NA, logit.mean=NA, logit.var=NA, logit.median=NA, logit.lower=NA, logit.upper=NA)) 
-     if(is.null(sampAll)) sampAll <- INLA::inla.posterior.sample(n = nsim, result = fit, intern = TRUE)
-
-     for(i in 1:dim(proj.agg)[1]){
-        if(is.null(timeVar)){
-            which <- which(weight.strata[, regionVar] == proj.agg$region[i])
-        }else{
-            which <-  which(weight.strata[, regionVar] == proj.agg$region[i] &
-                            weight.strata[, timeVar] == proj.agg$time[i]) 
-        }
-        draws <- rep(0, nsim)
-        for(j in 1:length(sampAll)){
-            r <- sampAll[[j]]$latent[paste0("region.struct:", match(proj.agg$region[i], colnames(Amat))), ]
-            if(!is.null(timeVar)) r <- r + sampAll[[j]]$latent[paste0("time.struct:", proj.agg$time[i]), ]
-            if(!is.null(timeVar) && include_time_unstruct) r <- r + sampAll[[j]]$latent[paste0("time.unstruct:", proj.agg$time[i]), ]
-
-            # only handling region-level covariates  
-            if(!is.null(X)){
+              # only handling region-level covariates
+              if(!is.null(X)){
                 for(xx in fixed){
-                    slope = sampAll[[j]]$latent[paste0(xx, ":1"), ]
-                    r <- r + slope * dat[which(dat$region == proj.agg$region[i])[1], xx]
+                  slope = sampAll[[j]]$latent[paste0(xx, ":1"), ]
+                  r <- r + slope * dat[which(dat$region == draws.out$region[i])[1], xx]
                 }
-            } 
-            for(s in stratalist){
-                intercept = sampAll[[j]]$latent[paste0("strata0", s, ":1"), ]
-                if(responseType == "binary"){
-                    draws[j] <- draws[j] + expit(r + intercept) * weight.strata[which, s]
-                }else if(responseType == "gaussian"){
-                    draws[j] <- draws[j] + (r + intercept) * weight.strata[which, s]
+              }
+
+              if(length(unique(data$strata0)) == 1) {
+                r <- r + sampAll[[j]]$latent["(Intercept):1", ]
+                draws.out[i, paste0("sample:", j)] <- r
+              } else {
+                s <- as.character(draws.out$strata[i])
+                r <- r + sampAll[[j]]$latent[paste0("strata0", s, ":1"), ]
+                draws.out[i, paste0("sample:", j)] <- r
+
+                # Aggregation with posterior samples
+                if(is.null(timeVar)){
+                  i.weight.strata <- which(weight.strata[, regionVar] == draws.out$region[i])
+                  i.overall <- which(draws.out.overall$region == draws.out$region[i])
+                }else{
+                  i.weight.strata <-  which(weight.strata[, regionVar] == draws.out$region[i] &
+                                              weight.strata[, timeVar] == draws.out$time[i])
+                  i.overall <-  which(draws.out.overall$region == draws.out$region[i] &
+                                        draws.out.overall$time == draws.out$time[i])
                 }
-            } 
+                q <- weight.strata[i.weight.strata, s]
+                draws.out.overall[i.overall, paste0("sample:", j)] <- draws.out.overall[i.overall, paste0("sample:", j)] + (r * q)
+              }
+            }
+          }
+
+          draws.out[, paste0("sample:", 1:nsim)] <- FUN(draws.out[, paste0("sample:", 1:nsim)])
+
+          if(length(unique(data$strata0)) > 1){
+            draws.out.overall[, paste0("sample:", 1:nsim)] <- FUN(draws.out.overall[, paste0("sample:", 1:nsim)])
+
+            for(i in 1:dim(proj.agg)[1]){
+              draws <- as.numeric(draws.out.overall[i, paste0("sample:", 1:nsim)])
+              proj.agg[i, "mean"] <- mean(draws)
+              proj.agg[i, "var"] <- var(draws)
+              proj.agg[i, "lower"] <- quantile(draws, (1 - CI)/2)
+              proj.agg[i, "upper"] <- quantile(draws, 1 - (1 - CI)/2)
+              proj.agg[i, "median"] <- median(draws)
+              if(responseType == "binary"){
+                proj.agg[i, "logit.mean"] <- mean(logit(draws))
+                proj.agg[i, "logit.var"] <- var(logit(draws))
+                proj.agg[i, "logit.lower"] <- quantile(logit(draws), (1-CI)/2)
+                proj.agg[i, "logit.upper"] <- quantile(logit(draws), 1-(1-CI)/2)
+                proj.agg[i, "logit.median"] <- median(logit(draws))
+              }
+            }
+          }
         }
-        proj.agg[i, "mean"] <- mean(draws)
-        proj.agg[i, "var"] <- var(draws)
-        proj.agg[i, "lower"] <- quantile(draws, (1 - CI)/2)
-        proj.agg[i, "upper"] <- quantile(draws, 1 - (1 - CI)/2)
-        proj.agg[i, "median"] <- median(draws)
-        if(responseType == "binary"){
-            proj.agg[i, "logit.mean"] <- mean(logit(draws))
-            proj.agg[i, "logit.var"] <- var(logit(draws))
-            proj.agg[i, "logit.lower"] <- quantile(logit(draws), (1-CI)/2)
-            proj.agg[i, "logit.upper"] <- quantile(logit(draws), 1-(1-CI)/2)
-            proj.agg[i, "logit.median"] <- median(logit(draws))
-        }
-     }
-    }else{
-        proj.agg <- NULL
     }
 
    if(!is.unit.level){
@@ -874,6 +892,7 @@ smoothSurvey <- function(data, geo = NULL, Amat = NULL, X = NULL, X.unit = NULL,
    if(save.draws){
     out$draws <- sampAll
     out$draws.est <- draws.out
+    out$draws.est.overall <- draws.out.overall
    }
    class(out) <-  "SUMMERmodel.svy"
 
